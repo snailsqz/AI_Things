@@ -9,6 +9,16 @@ import google.generativeai as genai
 
 load_dotenv(override=True)
 
+def record_unknown_question(question: str) -> dict:
+    print(f"--- LOG: UNKNOWN QUESTION RECORDED: '{question}' ---")
+    
+    return {"status": "success", "message": f"Question '{question}' has been recorded for review."}
+
+def record_user_details(email: str) -> dict:
+    print(f"--- LOG: USER EMAIL RECORDED: '{email}' ---")
+    return {"status": "success", "message": f"Thank you! The email '{email}' has been recorded."}
+
+
 class Me:
     def __init__(self):
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
@@ -41,17 +51,59 @@ If the user is engaging in discussion, try to steer them towards getting in touc
         system_prompt += f"With this context, please chat with the user, always staying in character as {self.name}."
         return system_prompt
 
+    def handle_tool_call(self, tool_calls):
+        results = []
+        for tool_call in tool_calls:
+            tool_name = tool_call.name
+            arguments = dict(tool_call.args)
+            
+            print(f"Tool called: {tool_name}", flush=True)
+            tool = globals().get(tool_name)
+            result = tool(**arguments) if tool else {}
+            
+            results.append({
+                "role": "tool",
+                "parts": [{
+                    "function_response": {
+                        "name": tool_name,
+                        "response": result
+                    }
+                }]
+            })
+        return results
+    
     def chat(self, message, history):
         full_history = [{"role": "user", "parts": [self.system_prompt()]}]
         for h in history:
             full_history.append({"role": "user", "parts": [h[0]]})
             full_history.append({"role": "model", "parts": [h[1]]})
         full_history.append({"role": "user", "parts": [message]})
-    
+
+        tools = [record_unknown_question, record_user_details]
+        
         response = self.model.generate_content(
             full_history,
+            tools=tools
         )
-                
+        
+        while (response.candidates and 
+              response.candidates[0].content.parts[0].function_call): 
+
+           function_calls = response.candidates[0].content.parts 
+           
+           print(f"Model requested {len(function_calls)} tool call(s).", flush=True)
+           
+           tool_requests = [part.function_call for part in function_calls if hasattr(part, 'function_call')]
+           tool_results = self.handle_tool_call(tool_requests)
+           
+           full_history.append(response.candidates[0].content) #
+           full_history.extend(tool_results)
+        
+           response = self.model.generate_content(
+               full_history,
+               tools=tools
+           )
+        
         return response.text
     
 
